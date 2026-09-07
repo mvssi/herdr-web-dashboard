@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 Herdr API Client - Protocol v20 Compliant
-Communicates with Herdr daemon via Unix Domain Socket (~/.config/herdr/herdr.sock)
+Communicates with the Herdr daemon local socket:
+  - Unix/macOS: Unix Domain Socket (~/.config/herdr/herdr.sock)
+  - Windows:    named pipe \\\\.\\pipe\\<abs-path> where abs-path e'
+                %APPDATA%\\herdr\\herdr.sock (il file .sock e' un placeholder)
 """
 
 import os
@@ -19,7 +22,16 @@ try:
 except Exception:
     pass
 
-DEFAULT_SOCKET_PATH = os.path.expanduser("~/.config/herdr/herdr.sock")
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    # Su Windows herdr (crate interprocess) espone l'API come named pipe:
+    # il file herdr.sock e' un semplice placeholder e il nome del pipe e'
+    # costruito anteponendo \\\\.\\pipe\\ al percorso assoluto del socket.
+    _appdata = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    DEFAULT_SOCKET_PATH = os.path.join(_appdata, "herdr", "herdr.sock")
+else:
+    DEFAULT_SOCKET_PATH = os.path.expanduser("~/.config/herdr/herdr.sock")
 
 def strip_ansi(text):
     """Remove ANSI escape sequences from terminal output."""
@@ -33,7 +45,7 @@ class HerdrClient:
         self.socket_path = socket_path or os.environ.get("HERDR_SOCKET", DEFAULT_SOCKET_PATH)
 
     def is_connected(self):
-        """Check if Herdr Unix socket is available and responsive."""
+        """Check if Herdr socket (Unix socket o named pipe su Windows) e' disponibile e responsive."""
         if not os.path.exists(self.socket_path):
             return False, f"Socket non trovato in {self.socket_path}"
         try:
@@ -44,6 +56,48 @@ class HerdrClient:
             return False, res.get("error", {}).get("message", "Ping fallito")
         except Exception as e:
             return False, str(e)
+
+    def _pipe_name(self):
+        """Windows: nome del named pipe corrispondente al path del socket."""
+        return "\\\\.\\pipe\\" + os.path.abspath(self.socket_path)
+
+    def _call_windows(self, payload, timeout):
+        """Send a JSON-RPC request over a Windows named pipe (file API).
+        Usa un thread per preservare la semantica di timeout del socket Unix."""
+        import threading
+
+        result = {}
+
+        def worker():
+            try:
+                with open(self._pipe_name(), "r+b", buffering=0) as f:
+                    f.write((json.dumps(payload) + "\n").encode('utf-8'))
+                    chunks = []
+                    while True:
+                        chunk = f.read(131072)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        if b"\n" in chunk:
+                            break
+                raw_resp = b"".join(chunks).decode('utf-8').strip()
+                if not raw_resp:
+                    result["resp"] = {"error": {"code": -2, "message": "Risposta vuota da Herdr pipe"}}
+                else:
+                    result["resp"] = json.loads(raw_resp)
+            except FileNotFoundError:
+                result["err"] = f"Pipe non trovato in {self._pipe_name()}"
+            except Exception as e:
+                result["err"] = str(e)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            return {"error": {"code": -3, "message": f"Timeout comunicazione pipe ({timeout}s)"}}
+        if "err" in result:
+            return {"error": {"code": -3, "message": f"Errore comunicazione socket: {result['err']}"}}
+        return result["resp"]
 
     def call(self, method, params=None, timeout=2.5):
         """Send a JSON-RPC request to Herdr socket and return parsed response."""
@@ -56,7 +110,10 @@ class HerdrClient:
             "method": method,
             "params": params or {}
         }
-        
+
+        if IS_WINDOWS:
+            return self._call_windows(payload, timeout)
+
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(timeout)
@@ -178,7 +235,10 @@ class HerdrClient:
         return self.call("agent.rename", {"target": target, "name": name})
 
     def resize_pane_pty(self, pane_id, cols, rows):
-        """Resize the underlying PTY for a pane via ioctl(TIOCSWINSZ) with SIGWINCH."""
+        """Resize the underlying PTY for a pane via ioctl(TIOCSWINSZ) with SIGWINCH.
+        Solo POSIX: su Windows la resize della PTY e' gestita dal demone herdr."""
+        if IS_WINDOWS:
+            return False, "resize_pane_pty non supportato su Windows (gestito dal demone herdr)"
         try:
             import os, fcntl, termios, struct, subprocess
             proc_info = self.call("pane.process_info", {"pane_id": pane_id})

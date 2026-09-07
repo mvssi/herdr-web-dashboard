@@ -24,12 +24,33 @@ from urllib.parse import urlparse, parse_qs
 from http.cookies import SimpleCookie
 from herdr_client import HerdrClient
 
+# Forza UTF-8 su stdout/stderr: evita UnicodeEncodeError con emoji su console
+# Windows (cp1252). No-op sulle piattaforme che gia' usano UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 PORT = 8088
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 CERTS_DIR = os.path.join(BASE_DIR, "certs")
 AUTH_FILE = os.path.join(BASE_DIR, "auth.json")
-HERDR_CONFIG_FILE = os.path.expanduser("~/.config/herdr/config.toml")
+IS_WINDOWS = sys.platform == "win32"
+if IS_WINDOWS:
+    # Su Windows herdr (crate interprocess) mantiene configurazione e dati
+    # in %APPDATA%\herdr (equivalente funzionale di ~/.config/herdr su Unix).
+    _appdata = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    HERDR_BASE_DIR = os.path.join(_appdata, "herdr")
+    HERDR_CONFIG_FILE = os.path.join(HERDR_BASE_DIR, "config.toml")
+    HERDR_PLUGINS_DIR = os.path.join(HERDR_BASE_DIR, "plugins")
+    HERDR_UPLOADS_DIR = os.path.join(HERDR_BASE_DIR, "uploads")
+else:
+    HERDR_BASE_DIR = os.path.expanduser("~/.config/herdr")
+    HERDR_CONFIG_FILE = os.path.join(HERDR_BASE_DIR, "config.toml")
+    HERDR_PLUGINS_DIR = os.path.join(HERDR_BASE_DIR, "plugins")
+    HERDR_UPLOADS_DIR = os.path.join(HERDR_BASE_DIR, "uploads")
 SESSIONS_FILE = os.path.join(BASE_DIR, "sessions.json")
 CERT_FILE = os.path.join(CERTS_DIR, "cert.pem")
 KEY_FILE = os.path.join(CERTS_DIR, "key.pem")
@@ -400,7 +421,9 @@ def get_git_branch(cwd):
         return None
     try:
         curr = os.path.abspath(os.path.expanduser(cwd))
-        while curr and curr != "/":
+        # Nota: su Windows dirname("C:\\") == "C:\\", quindi ci fermiamo quando
+        # la dir non cambia piu' (radice del drive) invece di confrontare con "/".
+        while curr and os.path.dirname(curr) != curr:
             head_file = os.path.join(curr, ".git", "HEAD")
             if os.path.isfile(head_file):
                 with open(head_file, "r") as f:
@@ -429,7 +452,7 @@ def get_git_branch(cwd):
     return None
 
 def load_herdr_config():
-    """Load ~/.config/herdr/config.toml as dictionary."""
+    """Load herdr config.toml (~/.config/herdr su Unix, %APPDATA%\\herdr su Windows)."""
     if not os.path.exists(HERDR_CONFIG_FILE):
         return {}
     try:
@@ -440,7 +463,7 @@ def load_herdr_config():
         return {}
 
 def save_herdr_config(cfg):
-    """Save dictionary to ~/.config/herdr/config.toml and trigger herdr server reload-config."""
+    """Save herdr config.toml (path os-aware) and trigger herdr server reload-config."""
     os.makedirs(os.path.dirname(HERDR_CONFIG_FILE), exist_ok=True)
     lines = []
     
@@ -560,8 +583,8 @@ def get_herdr_plugins():
     except Exception as e:
         print(f"Error fetching plugins: {e}")
 
-    # Also inspect ~/.config/herdr/plugins
-    p_dir = os.path.expanduser("~/.config/herdr/plugins")
+    # Also inspect herdr plugins directory (os-aware)
+    p_dir = HERDR_PLUGINS_DIR
     if os.path.isdir(p_dir):
         for item in os.listdir(p_dir):
             if not item.startswith(".") and item not in plugins:
@@ -583,10 +606,34 @@ def check_is_agent(p, p_title, agent_pane_ids):
         return False
     if "@" in title_lower and ":" in title_lower:
         return False
-    for kw in ["agy", "claude", "codex", "gemini", "cursor", "aider", "openhands", "herdr agent"]:
+    # Windows fallback: il demone non popola agent/agent_status (ConPTY non
+    # espone la process-group detection di Unix), quindi matcha anche i titoli
+    # tipici dei CLI agente (pi imposta il titolo a "π - <dir>").
+    for kw in ["agy", "claude", "codex", "gemini", "cursor", "aider", "openhands", "herdr agent", "π", "pi -", "pi —"]:
         if kw in title_lower:
             return True
     return False
+
+# Marker di schermo tipici delle sessioni agente (pi / claude code / simili):
+# usati come ultimo fallback quando il demone non segnala nulla (Windows).
+AGENT_SCREEN_RE = re.compile(
+    "working\.\.\."
+    "|[\u2800-\u28ff]"                 # spinner braille
+    "|esc to interrupt"
+    "|\u2191\d+[kmb]?"                      # tokens up (status bar pi)
+    "|\u2193\d+[kmb]?"                      # tokens down
+    "|\bch[\d.]+%"                     # context health (pi)
+    "|\bBG (ON|OFF)\b",                # flag background sessions (pi)
+    re.IGNORECASE
+)
+
+# Sottoinsieme che indica attivita' IN CORSO (per derivare lo status "working")
+AGENT_WORKING_RE = re.compile(
+    "working\.\.\."
+    "|[\u2800-\u28ff]"
+    "|esc to interrupt",
+    re.IGNORECASE
+)
 
 # In-memory cache for slash commands with 10s TTL
 _SLASH_COMMANDS_CACHE = {"timestamp": 0, "cwd": None, "data": []}
@@ -832,7 +879,30 @@ def get_aggregated_state(lines=1500, source="recent_unwrapped"):
                     clean_content = p_read.get("clean_text", "")
                     revision = p_read.get("revision", 0)
 
+                    # Geometria reale del PTY per il pane visualizzato (solo Windows:
+                    # la dimensione e' gestita dal TUI del demone e il frontend la
+                    # adotta invece di forzarla). Su Unix il resize ioctl e' autorevole.
+                    pty_cols = pty_rows = None
+                    if IS_WINDOWS and is_globally_focused:
+                        lay = herdr.call("pane.layout", {"pane_id": p_id})
+                        lay_layout = lay.get("result", {}).get("layout") if isinstance(lay, dict) else None
+                        if lay_layout:
+                            for lp in lay_layout.get("panes", []):
+                                if lp.get("pane_id") == p_id:
+                                    lp_rect = lp.get("rect") or {}
+                                    pty_cols = lp_rect.get("width")
+                                    pty_rows = lp_rect.get("height")
+                                    break
+
                     clean_tail = clean_content[-400:].lower() if clean_content else ""
+                    # Fallback screen-detection: su Windows il demone non popola
+                    # agent/agent_status, quindi matcha i marker tipici delle
+                    # sessioni agente nel testo a schermo (spinner, status bar)
+                    # e deriva anche lo status "working" dallo spinner attivo.
+                    if not is_agent and clean_tail and AGENT_SCREEN_RE.search(clean_tail):
+                        is_agent = True
+                        if p_status in ("unknown", "", "idle") and AGENT_WORKING_RE.search(clean_tail):
+                            p_status = "working"
                     waiting_confirm = any(kw in clean_tail for kw in [
                         "[y/n]", "(y/n)", "[y,n]", "approve?", "proceed?", "apply these changes", "(yes/no)", "enter to confirm"
                     ])
@@ -851,11 +921,13 @@ def get_aggregated_state(lines=1500, source="recent_unwrapped"):
                         "is_agent": is_agent,
                         "status": p_status,
                         "status_label": p_status,
-                        "focused": is_focused,
+                        "focused": is_globally_focused,
                         "raw_text": raw_content,
                         "clean_text": clean_tail[-120:],
                         "revision": revision,
-                        "waiting_confirm": waiting_confirm
+                        "waiting_confirm": waiting_confirm,
+                        "pty_cols": pty_cols,
+                        "pty_rows": pty_rows
                     }
                     tab_panes.append(pane_obj)
 
@@ -1105,7 +1177,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             file_path = query.get("path", [None])[0]
             if file_path:
                 norm_path = os.path.realpath(os.path.abspath(file_path))
-                allowed_uploads_dir = os.path.realpath(os.path.expanduser("~/.config/herdr/uploads"))
+                allowed_uploads_dir = os.path.realpath(HERDR_UPLOADS_DIR)
                 allowed_static_dir = os.path.realpath(STATIC_DIR)
                 
                 # Check path containment
@@ -1449,13 +1521,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 
             if pane_id:
                 success, msg = herdr.resize_pane_pty(pane_id, cols, rows)
-                return self.send_json({
+                resp = {
                     "success": success,
                     "message": msg,
                     "pane_id": pane_id,
                     "cols": cols,
                     "rows": rows
-                })
+                }
+                if not success:
+                    # Fallback cross-platform: riporta la geometria reale del PTY.
+                    # Su Windows (ConPTY) la dimensione e' fissata dal client TUI
+                    # del demone e il dashboard la adotta invece di forzarla.
+                    lay = herdr.call("pane.layout", {"pane_id": pane_id})
+                    lay_layout = lay.get("result", {}).get("layout") if isinstance(lay, dict) else None
+                    if lay_layout:
+                        for lp in lay_layout.get("panes", []):
+                            if lp.get("pane_id") == pane_id:
+                                lp_rect = lp.get("rect") or {}
+                                if lp_rect.get("width") and lp_rect.get("height"):
+                                    resp["pty"] = {"cols": lp_rect["width"], "rows": lp_rect["height"]}
+                                break
+                return self.send_json(resp)
             return self.send_json({"error": "No pane_id found"}, status=404)
 
         # Upload Management (Images/Files)
@@ -1467,7 +1553,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Missing image data"}, status=400)
                 
             try:
-                uploads_dir = os.path.expanduser("~/.config/herdr/uploads")
+                uploads_dir = HERDR_UPLOADS_DIR
                 os.makedirs(uploads_dir, exist_ok=True)
                 
                 if "," in image_data:

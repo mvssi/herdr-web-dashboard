@@ -12,6 +12,13 @@ import hashlib
 import time
 import getpass
 
+# Console Windows (cp1252): evita UnicodeEncodeError sulle print con emoji
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUTH_FILE = os.path.join(BASE_DIR, "auth.json")
 

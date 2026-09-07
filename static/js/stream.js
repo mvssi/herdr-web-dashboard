@@ -213,11 +213,27 @@ function updateConfirmationBanner(pane) {
 }
 
 function updateTerminalContent(pane) {
+    // Reader mode (schermi stretti): rendering HTML wrappato al posto del
+    // canvas xterm — bypass completo del flusso di write/scroll di xterm.
+    if (typeof isReaderModeActive === 'function' && isReaderModeActive() && typeof readerUpdateFromPane === 'function') {
+        readerUpdateFromPane(pane);
+        return;
+    }
     if (!State.term) return;
     const rawText = pane.raw_text || '';
     const revision = pane.revision || 0;
     
     const paneChanged = (State.lastRenderedPaneId !== pane.pane_id);
+
+    // Geometria PTY reale (inviata dal backend solo quando non e' ridimensionabile,
+    // es. Windows/ConPTY): mantiene il lock allineato alla dimensione del demone.
+    if (pane.pty_cols && pane.pty_rows && typeof lockTerminalToPty === 'function') {
+        if (paneChanged || State.lastPtyCols !== pane.pty_cols || State.lastPtyRows !== pane.pty_rows) {
+            State.lastPtyCols = pane.pty_cols;
+            State.lastPtyRows = pane.pty_rows;
+            lockTerminalToPty(pane.pty_cols, pane.pty_rows);
+        }
+    }
 
     // 1. Pane switched: full reset and scroll to bottom
     if (paneChanged) {

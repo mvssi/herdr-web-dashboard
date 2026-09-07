@@ -958,6 +958,37 @@ html, body {
     background: rgba(255, 255, 255, 0.32);
 }
 
+/* PTY-locked mode (Windows/ConPTY): il canvas xterm segue la geometria reale
+   del PTY (fissata dal TUI del demone) ed e' centrato orizzontalmente invece
+   di allungarsi su tutta la larghezza del contenitore. */
+.terminal-container.pty-locked .xterm {
+    width: fit-content !important;
+    margin: 0 auto;
+}
+
+/* Reader mode (mobile/schermi stretti): rendering HTML wrappato del flusso
+   del terminale al posto del canvas xterm. Scroll nativo, font leggibile,
+   word-wrap: niente tagli laterali ne' canvas microscopici. */
+.terminal-reader {
+    position: absolute;
+    inset: 4px 8px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    scroll-behavior: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 4px 2px 32px 2px;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+    z-index: 2;
+}
+
 .btn-scroll-bottom {
     position: absolute;
     bottom: 12px;
