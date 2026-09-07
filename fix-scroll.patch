@@ -1,0 +1,39 @@
+--- static/js/input-bar.js
++++ static/js/input-bar.js
+@@ -275,21 +275,32 @@
+         closeCtrlPopup();
+     }
+ 
++    let ctrlStartX = 0;
++    let ctrlStartY = 0;
++
+     // Pointerdown: start hold timer
+-    DOM.btnCtrlMenu.addEventListener('pointerdown', () => {
++    DOM.btnCtrlMenu.addEventListener('pointerdown', (e) => {
+         isLongPress = false;
+         isHolding = false;
++        ctrlStartX = e.clientX;
++        ctrlStartY = e.clientY;
+         pressTimer = setTimeout(() => {
+             isLongPress = true;
+             isHolding = true;
+             openCtrlPopup();
+         }, 260);
+-    });
++    }, { passive: true });
+ 
+     // Window pointermove: if dragging finger/mouse after long-press, highlight hovered item
+     window.addEventListener('pointermove', (e) => {
+-        if (!isHolding || DOM.ctrlShortcutsPopup.style.display !== 'block') return;
+-        const target = document.elementFromPoint(e.clientX, e.clientY);
++        if (!isHolding || DOM.ctrlShortcutsPopup.style.display !== 'block') {
++            if (pressTimer && (Math.abs(e.clientX - ctrlStartX) > 10 || Math.abs(e.clientY - ctrlStartY) > 10)) {
++                clearTimeout(pressTimer);
++                pressTimer = null;
++            }
++            return;
++        }
++        const target = document.elementFromPoint(e.clientX, e.clientY);
+         const gridItem = target ? target.closest('.ctrl-grid-item') : null;
+         DOM.ctrlShortcutsPopup.querySelectorAll('.ctrl-grid-item').forEach(el => {
+             el.classList.toggle('drag-hover', el === gridItem);
