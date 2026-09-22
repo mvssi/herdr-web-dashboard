@@ -7,16 +7,19 @@ services:
     restart: unless-stopped
     ports:
       - "8088:8088"
+      - "2222:22"
     environment:
       - PYTHONUNBUFFERED=1
       - HERDR_SOCKET=/root/.config/herdr/herdr.sock
+      - SSH_PUBLIC_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDsFtT5z2l4LbbydCOYxIayn0zN144SBVBYPHAS2bg55 mvssi.dev@gmail.com
+      - SSH_PASSWORD=herdr
     volumes:
       # Mantiene sessioni, cronologia e configurazioni di Herdr
       - herdr-config:/root/.config/herdr
       # Mantiene i certificati SSL auto-generati (evita warning a ogni riavvio)
       - herdr-certs:/app/certs
-      # Mantiene le credenziali admin create (auth.json)
-      - herdr-auth:/app/auth_data
+      # Mantiene le credenziali SSH
+      - herdr-ssh:/root/.ssh
     # Abilita PTY per il terminale e multiplexer
     stdin_open: true
     tty: true
@@ -26,5 +29,5 @@ volumes:
     name: herdr_config_data
   herdr-certs:
     name: herdr_certs_data
-  herdr-auth:
-    name: herdr_auth_data
+  herdr-ssh:
+    name: herdr_ssh_data

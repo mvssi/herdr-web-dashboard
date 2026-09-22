@@ -5,6 +5,25 @@ echo "================================================="
 echo "   Starting Herdr & Herdr Web Dashboard Server   "
 echo "================================================="
 
+# Genera chiavi host SSH se mancanti
+ssh-keygen -A 2>/dev/null || true
+
+# Configura password di root (default: herdr)
+echo "root:${SSH_PASSWORD:-herdr}" | chpasswd
+
+# Se specificata una chiave pubblica SSH, configurala in authorized_keys
+if [ -n "$SSH_PUBLIC_KEY" ]; then
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    echo "$SSH_PUBLIC_KEY" > /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+    echo "[SSH] Chiave pubblica SSH configurata con successo per root."
+fi
+
+# Avvia il demone SSH
+echo "[SSH] Avvio demone OpenSSH su porta 22..."
+/usr/sbin/sshd
+
 # Assicura che la directory di configurazione di Herdr esista
 mkdir -p /root/.config/herdr
 
@@ -39,6 +58,7 @@ fi
 cleanup() {
     echo "[Shutdown] Arresto del server in corso..."
     herdr server stop 2>/dev/null || kill -TERM "$HERDR_PID" 2>/dev/null || true
+    pkill sshd 2>/dev/null || true
     exit 0
 }
 trap cleanup SIGINT SIGTERM
