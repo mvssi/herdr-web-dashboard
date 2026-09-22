@@ -1,0 +1,30 @@
+services:
+  herdr-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: herdr-dashboard
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HERDR_SOCKET=/root/.config/herdr/herdr.sock
+    volumes:
+      # Mantiene sessioni, cronologia e configurazioni di Herdr
+      - herdr-config:/root/.config/herdr
+      # Mantiene i certificati SSL auto-generati (evita warning a ogni riavvio)
+      - herdr-certs:/app/certs
+      # Mantiene le credenziali admin create (auth.json)
+      - herdr-auth:/app/auth_data
+    # Abilita PTY per il terminale e multiplexer
+    stdin_open: true
+    tty: true
+
+volumes:
+  herdr-config:
+    name: herdr_config_data
+  herdr-certs:
+    name: herdr_certs_data
+  herdr-auth:
+    name: herdr_auth_data
