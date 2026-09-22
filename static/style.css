@@ -930,6 +930,41 @@ html, body {
     opacity: 0 !important;
 }
 
+/* Modalità tastiera diretta (kbd-on): riabilita la textarea di xterm.
+   Specificity maggiore della regola base: anche con !important vince questa. */
+.terminal-container.kbd-on .xterm-helper-textarea {
+    display: block !important;
+    pointer-events: auto !important;
+    visibility: visible !important;
+    width: 2px !important;
+    height: 2px !important;
+    opacity: 0 !important;
+}
+
+/* Textarea invisibile per l'input diretto da tastiera mobile (touch).
+   Vive dentro .terminal-container ma non intercetta i tocchi (passano al
+   terminale/scroll) e non causa zoom automatico iOS (font-size 16px). */
+.terminal-container .term-direct-input {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    width: 2px;
+    height: 2px;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    outline: none;
+    resize: none;
+    opacity: 0;
+    background: transparent;
+    color: transparent;
+    caret-color: transparent;
+    font-size: 16px;
+    line-height: 16px;
+    z-index: -1;
+    pointer-events: none;
+}
+
 .terminal-container .xterm-screen {
     touch-action: pan-x pan-y;
 }
@@ -1017,6 +1052,43 @@ html, body {
 
 .btn-scroll-bottom:active {
     transform: scale(0.95);
+}
+
+/* Pulsante modalità tastiera diretta (digitazione nel terminale) */
+.btn-kbd-mode {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-surface-elevated);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px;
+    font-size: 17px;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 10;
+    opacity: 0.5;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    transition: opacity 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.btn-kbd-mode:hover {
+    opacity: 1;
+    transform: translateY(-1px);
+}
+
+.btn-kbd-mode:active {
+    transform: scale(0.94);
+}
+
+.btn-kbd-mode.active {
+    opacity: 1;
+    border-color: var(--cyan);
+    box-shadow: 0 0 12px rgba(0, 229, 255, 0.35);
 }
 
 /* =============================================================================
@@ -2209,6 +2281,187 @@ html, body {
     color: #fff;
 }
 
+/* FS Browser (selezione cartelle nel dialog Nuovo Spazio) */
+.fs-browser {
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background: var(--bg-input);
+    overflow: hidden;
+}
+
+.fs-browser-crumbs {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 8px 10px;
+    background: var(--bg-surface-elevated);
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+}
+
+.fs-crumb {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font: inherit;
+    cursor: pointer;
+    padding: 3px 5px;
+    border-radius: 5px;
+    max-width: 130px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fs-crumb:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.05); }
+.fs-crumb.active { color: var(--accent); font-weight: 700; }
+
+.fs-crumb-sep {
+    color: var(--text-muted);
+    user-select: none;
+}
+
+.fs-browser-shortcuts {
+    display: flex;
+    gap: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border-subtle);
+    scrollbar-width: none;
+}
+
+.fs-browser-shortcuts::-webkit-scrollbar { display: none; }
+
+.fs-chip {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-surface-elevated);
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fs-chip.active {
+    background: rgba(0, 240, 255, 0.1);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.fs-browser-list {
+    max-height: 220px;
+    min-height: 88px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.fs-dir-row {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 2px;
+    padding: 0;
+    border: none;
+    border-bottom: 1px solid var(--border-subtle);
+    background: transparent;
+    cursor: pointer;
+}
+
+.fs-dir-row:last-child { border-bottom: none; }
+.fs-dir-row:hover { background: rgba(255, 255, 255, 0.04); }
+
+button.fs-dir-row {
+    padding: 8px 10px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    text-align: left;
+}
+
+.fs-dir-icon {
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.fs-dir-name {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 10px 8px 2px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fs-dir-row.fs-hidden .fs-dir-name { color: var(--text-muted); }
+
+.fs-star {
+    background: none;
+    border: none;
+    font-size: 14px;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 8px 6px 8px 10px;
+    flex-shrink: 0;
+}
+
+.fs-star.active { color: #ffd75e; }
+
+.fs-browser-empty {
+    padding: 26px 10px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.fs-browser-newfolder {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.fs-browser-newfolder[hidden] { display: none; }
+
+.fs-browser-newfolder input {
+    flex: 1;
+    height: 32px;
+    min-width: 0;
+    padding: 0 8px;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    outline: none;
+}
+
+.fs-browser-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border-subtle);
+}
+
 /* Toast */
 .toast-shelf {
     position: fixed;
@@ -2488,6 +2741,39 @@ html, body {
     background: rgba(0, 240, 255, 0.12);
     opacity: 1;
     transform: scale(1.08);
+}
+
+.btn-delete-ws-item {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    padding: 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    opacity: 0.5;
+    flex-shrink: 0;
+}
+
+.btn-delete-ws-item:hover,
+.btn-delete-ws-item:active {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.12);
+    opacity: 1;
+    transform: scale(1.08);
+}
+
+.btn-danger-confirm {
+    background: #ef4444 !important;
+    color: #fff !important;
+}
+
+.btn-danger-confirm:hover,
+.btn-danger-confirm:active {
+    background: #dc2626 !important;
 }
 
 .btn-edit-contact-name {

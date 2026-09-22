@@ -207,6 +207,9 @@ class HerdrClient:
     def workspace_focus(self, workspace_id):
         return self.call("workspace.focus", {"workspace_id": workspace_id})
 
+    def workspace_rename(self, workspace_id, label=None):
+        return self.call("workspace.rename", {"workspace_id": workspace_id, "label": label})
+
     def tab_create(self, workspace_id, label=None):
         params = {"workspace_id": workspace_id}
         if label:
@@ -218,6 +221,9 @@ class HerdrClient:
 
     def tab_focus(self, tab_id):
         return self.call("tab.focus", {"tab_id": tab_id})
+
+    def tab_rename(self, tab_id, label=None):
+        return self.call("tab.rename", {"tab_id": tab_id, "label": label})
 
     def pane_split(self, pane_id, direction="right"):
         return self.call("pane.split", {"pane_id": pane_id, "direction": direction})

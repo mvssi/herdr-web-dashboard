@@ -667,3 +667,202 @@ async function handleRenameAgentSubmit(resetToDefault = false) {
         showToast('❌ Impossibile rinominare l\'agente');
     }
 }
+
+// =============================================================================
+// WORKSPACE MANAGEMENT (Rename / Delete) & NEW TAB DIALOGS
+// =============================================================================
+let _currentRenamingWsId = null;
+let _currentDeletingWsId = null;
+
+function openRenameWorkspaceDialog(wsId, currentName) {
+    _currentRenamingWsId = wsId;
+    if (!DOM.dialogRenameWs) return;
+
+    if (DOM.inputRenameWsName) {
+        DOM.inputRenameWsName.value = currentName || '';
+    }
+    if (DOM.renameWsOrigName) {
+        DOM.renameWsOrigName.textContent = currentName || `Workspace ${wsId}`;
+    }
+    if (DOM.renameWsSubtitle) {
+        DOM.renameWsSubtitle.textContent = `Spazio #${wsId}`;
+    }
+
+    try {
+        DOM.dialogRenameWs.showModal();
+    } catch (e) {
+        DOM.dialogRenameWs.style.display = 'block';
+    }
+
+    setTimeout(() => {
+        if (DOM.inputRenameWsName) {
+            DOM.inputRenameWsName.focus();
+            DOM.inputRenameWsName.select();
+        }
+    }, 60);
+}
+
+function closeRenameWorkspaceDialog() {
+    if (DOM.dialogRenameWs) {
+        try {
+            DOM.dialogRenameWs.close();
+        } catch (e) {
+            DOM.dialogRenameWs.style.display = 'none';
+        }
+    }
+    _currentRenamingWsId = null;
+}
+
+async function handleRenameWorkspaceSubmit() {
+    if (!_currentRenamingWsId) return;
+    const wsId = _currentRenamingWsId;
+    const newName = DOM.inputRenameWsName ? DOM.inputRenameWsName.value.trim() : '';
+
+    if (!newName) {
+        showToast('⚠️ Inserisci un nome per lo spazio');
+        return;
+    }
+
+    triggerHaptic('medium');
+    const res = await apiCall('/api/workspace/rename', {
+        workspace_id: wsId,
+        label: newName
+    });
+
+    if (res && res.success) {
+        showToast(`✓ Spazio rinominato in "${newName}"`);
+
+        // Optimistic update: reflect new name immediately in local State
+        if (State.workspaces) {
+            State.workspaces.forEach(ws => {
+                if (ws.id === wsId) ws.name = newName;
+            });
+        }
+
+        if (typeof renderChatsList === 'function') renderChatsList();
+        closeRenameWorkspaceDialog();
+    } else {
+        showToast(`❌ ${(res && res.error) ? res.error : 'Impossibile rinominare lo spazio'}`);
+    }
+}
+
+function openDeleteWorkspaceDialog(wsId, wsName, paneCount, tabCount) {
+    _currentDeletingWsId = wsId;
+    if (!DOM.dialogDeleteWs) return;
+
+    if (DOM.deleteWsText) {
+        const name = wsName || `Workspace ${wsId}`;
+        const details = [];
+        if (tabCount) details.push(`${tabCount} tab`);
+        if (paneCount) details.push(`${paneCount} panell${paneCount === 1 ? 'o' : 'i'}`);
+        DOM.deleteWsText.innerHTML =
+            `Eliminare definitivamente lo spazio <strong>${escapeHtml(name)}</strong>?` +
+            (details.length ? `<br>Verranno chiusi anche ${details.join(' e ')}.` : '');
+    }
+
+    try {
+        DOM.dialogDeleteWs.showModal();
+    } catch (e) {
+        DOM.dialogDeleteWs.style.display = 'block';
+    }
+}
+
+function closeDeleteWorkspaceDialog() {
+    if (DOM.dialogDeleteWs) {
+        try {
+            DOM.dialogDeleteWs.close();
+        } catch (e) {
+            DOM.dialogDeleteWs.style.display = 'none';
+        }
+    }
+    _currentDeletingWsId = null;
+}
+
+async function handleDeleteWorkspaceSubmit() {
+    if (!_currentDeletingWsId) return;
+    const wsId = _currentDeletingWsId;
+
+    triggerHaptic('heavy');
+    const res = await apiCall('/api/workspace/close', { workspace_id: wsId });
+
+    if (res && !res.error) {
+        showToast('🗑️ Spazio eliminato');
+
+        // Optimistic update: remove from local State immediately
+        if (State.workspaces) {
+            State.workspaces = State.workspaces.filter(ws => ws.id !== wsId);
+        }
+        if (State.activeWorkspaceId === wsId) {
+            const nextWs = State.workspaces.find(w => w.focused) || State.workspaces[0];
+            if (nextWs) {
+                State.activeWorkspaceId = nextWs.id;
+                State.tabs = nextWs.tabs || [];
+                State.activeTabId = null;
+                State.activePaneId = null;
+                if (State.term) State.term.clear();
+                apiCall('/api/workspace/focus', { workspace_id: nextWs.id });
+            }
+        }
+
+        if (typeof renderChatsList === 'function') renderChatsList();
+        if (State.tabs && typeof renderTabs === 'function') renderTabs(State.tabs);
+        closeDeleteWorkspaceDialog();
+    } else {
+        showToast(`❌ ${(res && res.error) ? (res.error.message || res.error) : 'Impossibile eliminare lo spazio'}`);
+        closeDeleteWorkspaceDialog();
+    }
+}
+
+function openNewTabDialog() {
+    if (!DOM.dialogNewTab) {
+        // Fallback: crea direttamente se la dialog non esiste
+        apiCall('/api/tab/create', { workspace_id: State.activeWorkspaceId, label: 'tab' });
+        return;
+    }
+
+    const activeWs = State.workspaces.find(w => w.id === State.activeWorkspaceId);
+    if (DOM.newTabWsName) {
+        const labelSpan = DOM.newTabWsName.querySelector('span:last-child');
+        if (labelSpan) labelSpan.textContent = activeWs ? (activeWs.name || `Workspace ${activeWs.id}`) : 'Spazio';
+    }
+    if (DOM.inputNewTabLabel) {
+        DOM.inputNewTabLabel.value = '';
+    }
+
+    try {
+        DOM.dialogNewTab.showModal();
+    } catch (e) {
+        DOM.dialogNewTab.style.display = 'block';
+    }
+
+    setTimeout(() => {
+        if (DOM.inputNewTabLabel) DOM.inputNewTabLabel.focus();
+    }, 60);
+}
+
+function closeNewTabDialog() {
+    if (DOM.dialogNewTab) {
+        try {
+            DOM.dialogNewTab.close();
+        } catch (e) {
+            DOM.dialogNewTab.style.display = 'none';
+        }
+    }
+}
+
+async function handleNewTabSubmit() {
+    const label = DOM.inputNewTabLabel ? DOM.inputNewTabLabel.value.trim() : '';
+
+    triggerHaptic('medium');
+    closeNewTabDialog();
+    const res = await apiCall('/api/tab/create', {
+        workspace_id: State.activeWorkspaceId,
+        label: label || 'tab'
+    });
+
+    if (res && !res.error) {
+        showToast(label ? `✓ Tab "${label}" creata` : '✓ Nuova tab creata');
+    } else {
+        showToast('❌ Impossibile creare la tab');
+    }
+}

@@ -232,6 +232,20 @@ function renderChatsList() {
                     <button class="btn-mute-agent-item ${isWsMuted ? 'active-muted' : ''}" title="${isWsMuted ? 'Riattiva notifiche spazio' : 'Silenzia notifiche spazio'}" aria-label="Muto spazio">
                         <span>${isWsMuted ? '🔕' : '🔔'}</span>
                     </button>
+                    <button class="btn-rename-agent-item btn-rename-ws-item" data-ws-id="${ws.id}" title="Rinomina ${escapeHtml(ws.name || `Workspace ${ws.id}`)}" aria-label="Rinomina spazio">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                    </button>
+                    <button class="btn-delete-ws-item" data-ws-id="${ws.id}" title="Elimina ${escapeHtml(ws.name || `Workspace ${ws.id}`)}" aria-label="Elimina spazio">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            <line x1="10" y1="11" x2="10" y2="17"></line>
+                            <line x1="14" y1="11" x2="14" y2="17"></line>
+                        </svg>
+                    </button>
                 </div>
             `;
 
@@ -248,6 +262,24 @@ function renderChatsList() {
                         showToast(shouldEnable ? `🔔 Notifiche attivate per ${ws.name || 'Spazio'}` : `🔕 Notifiche disattivate per ${ws.name || 'Spazio'}`);
                     }
                     renderChatsList();
+                });
+            }
+
+            const btnWsRename = item.querySelector('.btn-rename-ws-item');
+            if (btnWsRename) {
+                btnWsRename.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    triggerHaptic('medium');
+                    openRenameWorkspaceDialog(ws.id, ws.name || `Workspace ${ws.id}`);
+                });
+            }
+
+            const btnWsDelete = item.querySelector('.btn-delete-ws-item');
+            if (btnWsDelete) {
+                btnWsDelete.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    triggerHaptic('medium');
+                    openDeleteWorkspaceDialog(ws.id, ws.name, totalPanes, totalTabs);
                 });
             }
 

@@ -14,16 +14,6 @@ function setupEventListeners() {
     DOM.btnHeaderContact.addEventListener('click', openContactInfo);
     if (DOM.btnOpenMenu) DOM.btnOpenMenu.addEventListener('click', openContactInfo);
 
-    // WhatsApp Chats List Screen Listeners
-    if (DOM.btnNewChat) {
-        DOM.btnNewChat.addEventListener('click', () => {
-            triggerHaptic('medium');
-            DOM.inputNewWsCwd.disabled = false;
-            DOM.inputNewWsLabel.disabled = false;
-            DOM.dialogNewWs.showModal();
-        });
-    }
-
     if (DOM.chatsFilterChips) {
         DOM.chatsFilterChips.addEventListener('click', (e) => {
             const item = e.target.closest('.tabbar-item');
@@ -116,10 +106,59 @@ function setupEventListeners() {
         });
     }
 
-    // Tab Add
+    // Rename Workspace Dialog
+    if (DOM.btnRenameWsConfirm) {
+        DOM.btnRenameWsConfirm.addEventListener('click', handleRenameWorkspaceSubmit);
+    }
+    if (DOM.btnRenameWsCancel) {
+        DOM.btnRenameWsCancel.addEventListener('click', closeRenameWorkspaceDialog);
+    }
+    if (DOM.btnRenameWsX) {
+        DOM.btnRenameWsX.addEventListener('click', closeRenameWorkspaceDialog);
+    }
+    if (DOM.inputRenameWsName) {
+        DOM.inputRenameWsName.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleRenameWorkspaceSubmit();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeRenameWorkspaceDialog();
+            }
+        });
+    }
+
+    // Delete Workspace Dialog
+    if (DOM.btnDeleteWsConfirm) {
+        DOM.btnDeleteWsConfirm.addEventListener('click', handleDeleteWorkspaceSubmit);
+    }
+    if (DOM.btnDeleteWsCancel) {
+        DOM.btnDeleteWsCancel.addEventListener('click', closeDeleteWorkspaceDialog);
+    }
+
+    // New Tab Dialog
+    if (DOM.btnNewTabConfirm) {
+        DOM.btnNewTabConfirm.addEventListener('click', handleNewTabSubmit);
+    }
+    if (DOM.btnNewTabCancel) {
+        DOM.btnNewTabCancel.addEventListener('click', closeNewTabDialog);
+    }
+    if (DOM.inputNewTabLabel) {
+        DOM.inputNewTabLabel.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleNewTabSubmit();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeNewTabDialog();
+            }
+        });
+    }
+
+    // Tab Add (chiede il nome della nuova tab)
     DOM.btnAddTab.addEventListener('click', () => {
         triggerHaptic('light');
-        apiCall('/api/tab/create', { workspace_id: State.activeWorkspaceId, label: 'tab' });
+        openNewTabDialog();
     });
 
     // Confirmation Banner
@@ -327,31 +366,193 @@ function setupEventListeners() {
         });
     }
 
-    // Workspace Dialog
-    if (DOM.btnCreateWs) {
-        DOM.btnCreateWs.addEventListener('click', () => {
-            closeBottomSheet();
-            DOM.inputNewWsCwd.disabled = false;
-            DOM.inputNewWsLabel.disabled = false;
-            DOM.dialogNewWs.showModal();
-        });
+    // Workspace Dialog + FS Browser (navigazione cartelle gestita dal server)
+    let fsBrowserPath = null;
+
+    function fsBaseName(p) {
+        if (!p) return '';
+        const parts = p.replace(/[\\/]+$/, '').split(/[\\/]/);
+        return parts[parts.length - 1] || p;
     }
 
-    DOM.btnDialogCancel.addEventListener('click', () => {
+    function fsRenderCrumbs(data) {
+        const sep = data.path.includes('\\') ? '\\' : '/';
+        const crumbs = [{ label: '🏠 Home', path: data.home }];
+        if (data.path !== data.home) {
+            const rel = data.path.slice(data.home.length).replace(/^[\\/]+/, '');
+            let acc = data.home.replace(/[\\/]+$/, '');
+            rel.split(/[\\/]+/).forEach(seg => {
+                acc += sep + seg;
+                crumbs.push({ label: seg, path: acc });
+            });
+        }
+        DOM.fsBrowserCrumbs.innerHTML = crumbs.map((c, i) => {
+            const isLast = i === crumbs.length - 1;
+            return `<button type="button" class="fs-crumb${isLast ? ' active' : ''}" data-fs-path="${escapeHtml(c.path)}" title="${escapeHtml(c.path)}">${escapeHtml(c.label)}</button>${isLast ? '' : '<span class="fs-crumb-sep">›</span>'}`;
+        }).join('');
+    }
+
+    function fsRenderShortcuts(data) {
+        const chips = [{ label: 'Home', path: data.home, fav: false }];
+        (data.favorites || []).forEach(p => chips.push({ label: fsBaseName(p), path: p, fav: true }));
+        DOM.fsBrowserShortcuts.innerHTML = chips.map(c => {
+            const active = c.path === data.path;
+            return `<button type="button" class="fs-chip${active ? ' active' : ''}" data-fs-path="${escapeHtml(c.path)}" title="${escapeHtml(c.path)}">${c.fav ? '⭐ ' : '🏠 '}${escapeHtml(c.label)}</button>`;
+        }).join('');
+    }
+
+    function fsRenderList(data) {
+        const rows = [];
+        if (!data.is_home && data.parent) {
+            rows.push(`<button type="button" class="fs-dir-row fs-parent" data-fs-path="${escapeHtml(data.parent)}"><span class="fs-dir-icon">↩</span><span class="fs-dir-name">..</span></button>`);
+        }
+        if (!data.directories || data.directories.length === 0) {
+            rows.push('<div class="fs-browser-empty">Nessuna sottocartella qui</div>');
+        } else {
+            data.directories.forEach(d => {
+                const isFav = (data.favorites || []).includes(d.path);
+                rows.push(`<div class="fs-dir-row${d.hidden ? ' fs-hidden' : ''}"><button type="button" class="fs-star${isFav ? ' active' : ''}" data-fs-fav="${escapeHtml(d.path)}" data-fs-fav-state="${isFav}" title="${isFav ? 'Rimuovi dai preferiti' : 'Aggiungi ai preferiti'}">${isFav ? '⭐' : '☆'}</button><button type="button" class="fs-dir-name" data-fs-path="${escapeHtml(d.path)}" title="${escapeHtml(d.path)}"><span class="fs-dir-icon">📁</span>${escapeHtml(d.name)}</button></div>`);
+            });
+        }
+        DOM.fsBrowserList.innerHTML = rows.join('');
+    }
+
+    async function fsBrowse(path) {
+        const q = path ? ('?path=' + encodeURIComponent(path)) : '';
+        const data = await apiCall('/api/fs/list' + q, null, 'GET');
+        if (!data || data.error) {
+            showToast((data && data.error) || 'Impossibile leggere le cartelle');
+            return;
+        }
+        fsBrowserPath = data.path;
+        // Il campo CWD segue la navigazione; resta comunque modificabile a mano
+        DOM.inputNewWsCwd.value = data.path;
+        fsRenderCrumbs(data);
+        fsRenderShortcuts(data);
+        fsRenderList(data);
+    }
+
+    async function fsToggleFavorite(btn) {
+        const path = btn.dataset.fsFav;
+        const makeFav = btn.dataset.fsFavState !== 'true';
+        const res = await apiCall('/api/fs/favorites', { path, favorite: makeFav });
+        if (res && res.success) {
+            triggerHaptic('success');
+            fsBrowse(fsBrowserPath);
+        } else {
+            showToast((res && res.error) || 'Operazione fallita');
+        }
+    }
+
+    function fsOpenNewFolder() {
+        DOM.fsBrowserNewFolder.hidden = false;
+        DOM.inputFsNewFolderName.value = '';
+        DOM.inputFsNewFolderName.focus();
+    }
+
+    function fsCloseNewFolder() {
+        DOM.fsBrowserNewFolder.hidden = true;
+        DOM.inputFsNewFolderName.value = '';
+    }
+
+    async function fsSubmitNewFolder() {
+        const name = DOM.inputFsNewFolderName.value.trim();
+        if (!name) {
+            DOM.inputFsNewFolderName.focus();
+            return;
+        }
+        const res = await apiCall('/api/fs/mkdir', { path: fsBrowserPath, name });
+        if (res && res.success) {
+            triggerHaptic('success');
+            fsCloseNewFolder();
+            showToast('Cartella creata');
+            // Rimane nella cartella corrente: la nuova appare nell'elenco
+            await fsBrowse(fsBrowserPath);
+        } else {
+            showToast((res && res.error) || 'Creazione cartella fallita');
+        }
+    }
+
+    function openNewWsDialog() {
+        closeBottomSheet();
+        DOM.inputNewWsCwd.disabled = false;
+        DOM.inputNewWsLabel.disabled = false;
+        DOM.dialogNewWs.showModal();
+        fsCloseNewFolder();
+        fsBrowse(); // parte dalla home utente
+    }
+
+    function closeNewWsDialog() {
         DOM.dialogNewWs.close();
         DOM.inputNewWsCwd.disabled = true;
         DOM.inputNewWsLabel.disabled = true;
-    });
+        fsCloseNewFolder();
+    }
+
+    if (DOM.btnCreateWs) {
+        DOM.btnCreateWs.addEventListener('click', openNewWsDialog);
+    }
+
+    if (DOM.btnNewChat) {
+        DOM.btnNewChat.addEventListener('click', () => {
+            triggerHaptic('medium');
+            openNewWsDialog();
+        });
+    }
+
+    DOM.btnDialogCancel.addEventListener('click', closeNewWsDialog);
 
     DOM.btnDialogConfirm.addEventListener('click', async () => {
         const cwd = DOM.inputNewWsCwd.value.trim() || '~';
         const label = DOM.inputNewWsLabel.value.trim() || undefined;
-        DOM.dialogNewWs.close();
-        DOM.inputNewWsCwd.disabled = true;
-        DOM.inputNewWsLabel.disabled = true;
+        closeNewWsDialog();
         triggerHaptic('success');
         const res = await apiCall('/api/workspace/create', { cwd, label });
         if (res && !res.error) showToast('Nuovo spazio creato');
+    });
+
+    // Delegazione eventi del browser di cartelle
+    DOM.fsBrowserCrumbs.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-fs-path]');
+        if (btn) {
+            triggerHaptic('light');
+            fsBrowse(btn.dataset.fsPath);
+        }
+    });
+
+    DOM.fsBrowserShortcuts.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-fs-path]');
+        if (btn) {
+            triggerHaptic('light');
+            fsBrowse(btn.dataset.fsPath);
+        }
+    });
+
+    DOM.fsBrowserList.addEventListener('click', (e) => {
+        const favBtn = e.target.closest('[data-fs-fav]');
+        if (favBtn) {
+            fsToggleFavorite(favBtn);
+            return;
+        }
+        const navBtn = e.target.closest('[data-fs-path]');
+        if (navBtn) {
+            triggerHaptic('light');
+            fsBrowse(navBtn.dataset.fsPath);
+        }
+    });
+
+    DOM.btnFsNewFolder.addEventListener('click', fsOpenNewFolder);
+    DOM.btnFsNewFolderOk.addEventListener('click', fsSubmitNewFolder);
+    DOM.btnFsNewFolderCancel.addEventListener('click', fsCloseNewFolder);
+
+    DOM.inputFsNewFolderName.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            fsSubmitNewFolder();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            fsCloseNewFolder();
+        }
     });
 
     // Mobile Viewport Resize Handling

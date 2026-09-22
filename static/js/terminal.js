@@ -426,6 +426,283 @@ function initResizeObserver() {
     }
 }
 
+// =============================================================================
+// KEYBOARD MODE: digitazione diretta nella PTY reale (visibile anche dal PC)
+// =============================================================================
+State.termKeyboard = { enabled: false };
+
+let _kbBuf = '';
+let _kbTimer = null;
+
+function flushKeyboardInput() {
+    if (_kbTimer) { clearTimeout(_kbTimer); _kbTimer = null; }
+    const chunk = _kbBuf;
+    _kbBuf = '';
+    if (!chunk) return;
+    const paneId = State.activePaneId; // risolto all'invio (può cambiare durante il batch)
+    if (!paneId) return;
+    apiCall('/api/pane/text', { pane_id: paneId, text: chunk, auto_enter: false });
+}
+
+function handleTermInput(data) {
+    if (!State.termKeyboard || !State.termKeyboard.enabled) return;
+    _kbBuf += data;
+    if (_kbBuf.length >= 256) { flushKeyboardInput(); return; } // paste/sequenze lunghe: invio subito
+    if (!_kbTimer) _kbTimer = setTimeout(flushKeyboardInput, 120); // micro-batching anti-lag
+}
+
+// -----------------------------------------------------------------------------
+// Input diretto MOBILE (touch): textarea custom con pipeline delta-based.
+// Perché non la textarea di xterm? L'IME Android (Gboard & co.) tiene le lettere
+// "in composizione" (input insertCompositionText, che xterm ignora: gestisce
+// solo insertText) e le committa SOLO su spazio/punteggiatura: il testo arriva
+// quindi in blocco ritardato. La nostra textarea inoltra invece OGNI evento
+// input immediatamente, composizione inclusa (delta progressivi).
+// -----------------------------------------------------------------------------
+let _touchDevice = null;
+function isTouchDevice() {
+    if (_touchDevice === null) {
+        _touchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    }
+    return _touchDevice;
+}
+
+let _customInput = null;
+let _ciLastValue = '';
+let _ciComposing = false;
+
+const _SPECIAL_KEYS = {
+    'Backspace': '\x7f',
+    'Tab': '\t',
+    'Escape': '\x1b',
+    'ArrowUp': '\x1b[A',
+    'ArrowDown': '\x1b[B',
+    'ArrowRight': '\x1b[C',
+    'ArrowLeft': '\x1b[D',
+    'Home': '\x1b[H',
+    'End': '\x1b[F',
+    'Delete': '\x1b[3~',
+    'PageUp': '\x1b[5~',
+    'PageDown': '\x1b[6~'
+};
+
+// Confronta il nuovo valore della textarea col precedente e lo traduce in
+// stream terminale: testo inserito e/o N backspace (\x7f), composizione IME inclusa.
+function sendCustomInputDelta(next) {
+    const prev = _ciLastValue;
+    if (next === prev) return;
+    if (next.length > prev.length && next.startsWith(prev)) {
+        handleTermInput(next.slice(prev.length));
+    } else {
+        // Cancellazione e/o sostituzione (backspace, autocorrect, suggerimenti IME)
+        let p = 0;
+        const min = Math.min(prev.length, next.length);
+        while (p < min && prev[p] === next[p]) p++;
+        for (let i = prev.length; i > p; i--) handleTermInput('\x7f'); // cancellazioni
+        if (p < next.length) handleTermInput(next.slice(p));           // reinserimenti
+    }
+    _ciLastValue = next;
+}
+
+function ensureCustomInput() {
+    if (_customInput) return _customInput;
+    if (!DOM.terminalContainer) return null;
+    const ta = document.createElement('textarea');
+    ta.className = 'term-direct-input';
+    ta.setAttribute('autocapitalize', 'none');
+    ta.setAttribute('autocomplete', 'off');
+    ta.setAttribute('autocorrect', 'off');
+    ta.setAttribute('spellcheck', 'false');
+    ta.setAttribute('enterkeyhint', 'send');
+    ta.setAttribute('aria-label', 'Input diretto del terminale');
+    ta.setAttribute('rows', '1');
+
+    ta.addEventListener('compositionstart', () => { _ciComposing = true; });
+    ta.addEventListener('compositionend', () => {
+        _ciComposing = false;
+        if (ta.value) sendCustomInputDelta(ta.value); // eventuale residuo non già inviato via delta
+        ta.value = '';
+        _ciLastValue = '';
+    });
+    ta.addEventListener('input', () => {
+        const v = ta.value;
+        sendCustomInputDelta(v);
+        // Fuori composizione il campo resta sempre vuoto: ogni tasto è un delta pulito.
+        if (!_ciComposing && v) { ta.value = ''; _ciLastValue = ''; }
+    });
+    ta.addEventListener('beforeinput', (e) => {
+        // Alcune tastiere mandano il newline come insertLineBreak invece di keydown Enter
+        if (e.inputType === 'insertLineBreak') {
+            e.preventDefault();
+            if (!_ciComposing) handleTermInput('\r');
+        }
+    });
+    ta.addEventListener('keydown', (e) => {
+        // Enter: alcune IME non generano compositionend sull'action "send":
+        // committiamo manualmente il buffer prima di inviare \r.
+        if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            e.preventDefault();
+            if (_ciComposing) {
+                sendCustomInputDelta(ta.value);
+                ta.value = '';
+                _ciLastValue = '';
+                _ciComposing = false;
+            }
+            handleTermInput('\r');
+            return;
+        }
+        // Durante la composizione IME ogni altra cosa spetta all'IME stesso:
+        // inserimenti/backspace arrivano comunque come delta dagli eventi input.
+        if (_ciComposing || e.isComposing) return;
+        let data = null;
+        if ((e.ctrlKey || e.metaKey) && e.key.length === 1) {
+            const c = e.key.toLowerCase().charCodeAt(0) - 96;
+            if (c >= 1 && c <= 26) data = String.fromCharCode(c); // Ctrl+A..Z, Cmd+A..Z
+        } else if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+            if (e.key === 'Tab' && e.shiftKey) data = '\x1b[Z';
+            else data = Object.prototype.hasOwnProperty.call(_SPECIAL_KEYS, e.key) ? _SPECIAL_KEYS[e.key] : null;
+        }
+        if (data !== null) {
+            e.preventDefault(); // il carattere non deve finire nella textarea (sarebbe doppio)
+            handleTermInput(data);
+        }
+    });
+    ta.addEventListener('blur', () => {
+        // La tastiera si chiude: svuota il campo e flusha il buffer residuo
+        if (!_ciComposing && ta.value) {
+            sendCustomInputDelta(ta.value);
+            ta.value = '';
+            _ciLastValue = '';
+        }
+        flushKeyboardInput();
+    });
+    DOM.terminalContainer.appendChild(ta);
+    _customInput = ta;
+    return ta;
+}
+
+function applyKeyboardMode() {
+    const enabled = !!(State.termKeyboard && State.termKeyboard.enabled);
+    const touch = isTouchDevice();
+    if (DOM.btnKeyboardToggle) DOM.btnKeyboardToggle.classList.toggle('active', enabled);
+    // La classe kbd-on abilita la regola CSS che riporta la textarea di xterm a
+    // display:block/visible (la regola base del tema la nasconde con !important).
+    // Su touch non serve: xterm resta read-only, l'input passa dalla textarea custom.
+    if (DOM.terminalContainer) DOM.terminalContainer.classList.toggle('kbd-on', enabled && !touch);
+    if (_customInput) {
+        _customInput.readOnly = !enabled;
+        if (!enabled && document.activeElement === _customInput) _customInput.blur();
+    }
+    if (!State.term) return;
+    const xtermInteractive = enabled && !touch;
+    try { State.term.options.disableStdin = !xtermInteractive; } catch (e) {}
+    const ta = State.term.textarea;
+    if (ta) {
+        ta.readOnly = !xtermInteractive;
+        ta.disabled = !xtermInteractive;
+        ta.tabIndex = xtermInteractive ? 0 : -1;
+        if (xtermInteractive) {
+            ta.setAttribute('autocapitalize', 'none');
+            ta.setAttribute('autocorrect', 'off');
+            ta.setAttribute('spellcheck', 'false');
+            ta.setAttribute('autocomplete', 'off');
+            ta.removeAttribute('inputmode');
+            ta.removeAttribute('aria-hidden');
+        } else {
+            ta.setAttribute('inputmode', 'none');
+            ta.setAttribute('aria-hidden', 'true');
+            if (document.activeElement === ta) ta.blur();
+        }
+    }
+}
+
+// Focus immediato dell'input giusto (custom su touch, textarea di xterm su PC).
+// Va chiamato SINCRONAMENTE dentro il gesto utente (click/tap): è la condizione
+// perché il browser apra la tastiera software.
+function focusTerminalInputNow() {
+    if (!(State.termKeyboard && State.termKeyboard.enabled)) return;
+    if (isTouchDevice()) {
+        const ci = ensureCustomInput();
+        if (!ci) return;
+        if (document.activeElement !== ci) {
+            try { ci.focus({ preventScroll: true }); } catch (e) { try { ci.focus(); } catch (e2) {} }
+        }
+        return;
+    }
+    if (!State.term) return;
+    State.term.focus();
+    const ta = State.term.textarea;
+    if (ta && document.activeElement !== ta) {
+        try { ta.focus({ preventScroll: true }); } catch (e) { try { ta.focus(); } catch (e2) {} }
+    }
+}
+
+function toggleKeyboardMode(force) {
+    const next = (typeof force === 'boolean') ? force : !State.termKeyboard.enabled;
+    State.termKeyboard.enabled = next;
+    try { localStorage.setItem('herdr_term_keyboard', next ? '1' : '0'); } catch (e) {}
+    applyKeyboardMode();
+    if (next) {
+        // Apertura IMMEDIATA della tastiera: focus sincrono nel gesto + retry post-layout
+        focusTerminalInputNow();
+        setTimeout(focusTerminalInputNow, 150);
+        if (typeof showToast === 'function') {
+            showToast(isTouchDevice() ? '⌨️ Tastiera aperta: scrivi direttamente nel terminale' : '⌨️ Modalità scrittura attiva');
+        }
+    } else {
+        if (State.term && State.term.textarea) State.term.textarea.blur();
+        if (_customInput && document.activeElement === _customInput) _customInput.blur();
+        flushKeyboardInput();
+        if (typeof showToast === 'function') showToast('👁️ Solo visualizzazione (tastiera diretta off)');
+    }
+}
+
+// Focus dal tap sul terminale se la modalità tastiera è attiva (con dedup anti-doppio-tap)
+let _lastKbdFocusTap = 0;
+function focusTerminalIfKbd() {
+    if (!(State.termKeyboard && State.termKeyboard.enabled)) return;
+    const now = Date.now();
+    if (now - _lastKbdFocusTap < 300) return;
+    _lastKbdFocusTap = now;
+    focusTerminalInputNow();
+}
+
+function initKeyboardMode() {
+    let stored = null;
+    try { stored = localStorage.getItem('herdr_term_keyboard'); } catch (e) {}
+    if (stored !== null) {
+        State.termKeyboard.enabled = (stored === '1');
+    } else {
+        // Default: attiva su PC (dove il click non apre tastiere), opt-in su mobile
+        State.termKeyboard.enabled = !isTouchDevice();
+    }
+    if (DOM.btnKeyboardToggle) {
+        DOM.btnKeyboardToggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleKeyboardMode();
+        });
+    }
+    // Focus robusto: tap brevi su touchend (Android) + click (desktop), con dedup
+    let _tsX = 0, _tsY = 0, _tsT = 0;
+    if (DOM.terminalContainer) {
+        DOM.terminalContainer.addEventListener('touchstart', (e) => {
+            const t = e.changedTouches && e.changedTouches[0];
+            if (t) { _tsX = t.clientX; _tsY = t.clientY; _tsT = Date.now(); }
+        }, { passive: true });
+        DOM.terminalContainer.addEventListener('touchend', (e) => {
+            const t = e.changedTouches && e.changedTouches[0];
+            if (!t) return;
+            const dx = t.clientX - _tsX, dy = t.clientY - _tsY;
+            // Solo tap brevi e senza scroll: evita di far saltare la tastiera durante lo scroll
+            if (Math.abs(dx) < 12 && Math.abs(dy) < 12 && (Date.now() - _tsT) < 350) {
+                focusTerminalIfKbd();
+            }
+        }, { passive: true });
+        DOM.terminalContainer.addEventListener('click', focusTerminalIfKbd);
+    }
+    document.addEventListener('visibilitychange', () => { if (document.hidden) flushKeyboardInput(); });
+}
+
 function initTerminal() {
     if (!DOM.terminalContainer) return;
 
@@ -459,20 +736,29 @@ function initTerminal() {
 
     State.term.open(DOM.terminalContainer);
 
-    // Disable and lock textarea to prevent mobile keyboard pop-up or focus steal
+    // Focus consentito solo in modalità tastiera diretta; altrimenti sola lettura.
+    // Catturiamo il focus ORIGINALE dall'istanza (non dal prototype) per robustezza.
+    const _origTermFocus = (typeof State.term.focus === 'function') ? State.term.focus : null;
+    State.term.focus = function () {
+        // Su touch l'input non passa mai dalla textarea di xterm (vedi KEYBOARD MODE):
+        // prenderne il focus ruberebbe la tastiera alla textarea custom.
+        if (isTouchDevice()) return;
+        if (State.termKeyboard && State.termKeyboard.enabled && _origTermFocus) {
+            try { _origTermFocus.call(this); } catch (e) {}
+        }
+    };
     if (State.term.textarea) {
-        State.term.textarea.readOnly = true;
-        State.term.textarea.disabled = true;
-        State.term.textarea.tabIndex = -1;
-        State.term.textarea.setAttribute('inputmode', 'none');
-        State.term.textarea.setAttribute('aria-hidden', 'true');
         State.term.textarea.addEventListener('focus', () => {
-            if (State.term && State.term.textarea) State.term.textarea.blur();
+            // Su touch la textarea di xterm non deve MAI prendere il focus
+            if (State.term && State.term.textarea && (!(State.termKeyboard && State.termKeyboard.enabled) || isTouchDevice())) {
+                State.term.textarea.blur();
+            }
         });
-        State.term.textarea.blur();
     }
-    // Stub focus to prevent any touch or programmatic focus attempt
-    State.term.focus = function() {};
+    State.term.onData(handleTermInput);
+
+    initKeyboardMode();
+    applyKeyboardMode();
 
     // ensureWebglAddon();
     initSubpixelScroll();

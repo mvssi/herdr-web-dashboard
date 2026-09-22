@@ -432,7 +432,7 @@ function renderSettingsScreen(container) {
                                 pushEl.checked = false;
                                 if (testPushBtn) testPushBtn.style.display = 'none';
                                 if (pushDesc) pushDesc.textContent = 'Permesso notifiche non concesso o non supportato.';
-                                alert('Permesso notifiche non concesso o non supportato. Se sei su iPhone, assicurati che la pagina sia stata aggiunta alla Home e che le notifiche per la Web App siano consentite in Impostazioni iOS.');
+                                var pushHelp = ' Se sei su iPhone, assicurati che la pagina sia stata aggiunta alla Home e che le notifiche per la Web App siano consentite in Impostazioni iOS.';if (/android/i.test(navigator.userAgent)) { pushHelp = ' Su Android verifica che: 1) la pagina sia aperta in HTTPS senza avviso certificato (installa la CA del server da ' + location.origin + '/ca.crt come "Certificato CA" nelle Impostazioni Android, poi riapri la pagina); 2) le notifiche per Chrome siano consentite.'; }alert('Permesso notifiche non concesso o attivazione fallita (controlla anche la console).' + pushHelp);
                             }
                         } else {
                             triggerHaptic('medium');

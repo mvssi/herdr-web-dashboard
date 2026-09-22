@@ -11,6 +11,7 @@ import glob
 import json
 import time
 import ssl
+import socket
 import subprocess
 import secrets
 import hashlib
@@ -61,6 +62,10 @@ herdr = HerdrClient()
 
 NOTIFICATION_SETTINGS_PATH = os.path.join(BASE_DIR, "notification_settings.json")
 
+# Browser di cartelle per la creazione degli spazi (limitato alla home utente)
+FS_ROOT = os.path.realpath(os.path.expanduser("~"))
+FS_FAVORITES_PATH = os.path.join(BASE_DIR, "fs_favorites.json")
+
 DEFAULT_NOTIFICATION_SETTINGS = {
     "enabled": True,
     "events": {
@@ -105,6 +110,65 @@ def save_notification_settings(settings):
     except Exception as e:
         print(f"Error saving notification settings: {e}")
         return settings
+
+# ---------- Filesystem browser (solo dentro la home utente) ----------
+
+def fs_safe_resolve(path):
+    """Risolve un percorso e verifica che resti dentro la home utente (FS_ROOT).
+    Ritorna il percorso assoluto risolto, o None se invalido/fuori limite."""
+    if not path or not isinstance(path, str):
+        return None
+    try:
+        resolved = os.path.realpath(os.path.abspath(os.path.expanduser(path.strip())))
+    except Exception:
+        return None
+    if resolved == FS_ROOT:
+        return resolved
+    # Confronto case-insensitive sui filesystem Windows
+    a = resolved.lower() if IS_WINDOWS else resolved
+    b = FS_ROOT.lower() if IS_WINDOWS else FS_ROOT
+    if a.startswith(b + os.sep):
+        return resolved
+    return None
+
+def load_fs_favorites():
+    try:
+        if os.path.exists(FS_FAVORITES_PATH):
+            with open(FS_FAVORITES_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                # Mantieni solo i preferiti che esistono ancora e sono validi
+                return [fs_safe_resolve(p) for p in data if fs_safe_resolve(p)]
+    except Exception as e:
+        print(f"Error reading fs favorites: {e}")
+    return []
+
+def save_fs_favorites(paths):
+    try:
+        with open(FS_FAVORITES_PATH, "w", encoding="utf-8") as f:
+            json.dump(paths, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving fs favorites: {e}")
+
+def fs_list_dir(path):
+    """Elenca le sottocartelle di una directory gia' validata dentro la home.
+    Salta file, symlink e giunzioni (es. junction di compatibilita' di Windows).
+    Ritorna (lista_percorsi | None, errore | None)."""
+    visible, hidden = [], []
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                        continue
+                    (hidden if entry.name.startswith(".") else visible).append(entry.path)
+                except OSError:
+                    continue
+    except OSError as e:
+        return None, str(e)
+    dirs = (sorted(visible, key=lambda p: os.path.basename(p).lower())
+            + sorted(hidden, key=lambda p: os.path.basename(p).lower()))
+    return dirs, None
 
 def toggle_notification_target(target_type, target_id, enabled):
     cfg = load_notification_settings()
@@ -267,6 +331,64 @@ def save_custom_agent_names(names):
         print(f"Error saving custom agent names: {e}")
 
 
+def get_local_ipv4_addresses():
+    """Raccoglie tutti gli IPv4 locali della macchina (LAN, Tailscale, Docker, VM)."""
+    ips = {"127.0.0.1"}
+    # 1) Tutti gli indirizzi associati all'hostname (include Tailscale/VM/LAN)
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("169.254."):  # skip link-local
+                ips.add(ip)
+    except Exception:
+        pass
+    # 2) Rilevamento interfaccia di default (route in uscita)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ips.add(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    return sorted(ips)
+
+def ensure_vapid_keys():
+    """Genera la coppia di chiavi VAPID per il Web Push se mancante."""
+    v_path = os.path.join(BASE_DIR, "vapid_keys.json")
+    priv_path = os.path.join(BASE_DIR, "private_key.pem")
+    cfg = {}
+    if os.path.exists(v_path):
+        try:
+            with open(v_path) as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
+    if os.path.exists(priv_path) and cfg.get("public_key"):
+        return
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import serialization
+    except ImportError:
+        print("⚠️ [VAPID] Libreria 'cryptography' non installata: impossibile generare le chiavi Web Push.")
+        print("   → Esegui: pip install pywebpush")
+        return
+    priv_key = ec.generate_private_key(ec.SECP256R1())
+    pub_raw = priv_key.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    pub_b64 = base64.urlsafe_b64encode(pub_raw).decode().rstrip("=")
+    pem = priv_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption())
+    with open(priv_path, "wb") as f:
+        f.write(pem)
+    os.chmod(priv_path, 0o600)
+    cfg["public_key"] = pub_b64
+    cfg.setdefault("private_key_file", "private_key.pem")
+    with open(v_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print("🔑 [VAPID] Chiavi Web Push generate (private_key.pem + vapid_keys.json).")
+
 def ensure_ssl_certificates():
     """Generate Root CA and SAN SSL certificates if they don't already exist."""
     os.makedirs(CERTS_DIR, exist_ok=True)
@@ -282,41 +404,47 @@ def ensure_ssl_certificates():
         os.chmod(CA_KEY_FILE, 0o600)
         os.chmod(CA_CERT_FILE, 0o644)
 
-    # 2. Server Certificate signed by CA with SAN IP & localhost
-    if not os.path.exists(CERT_FILE) or not os.path.exists(KEY_FILE):
-        print("🔒 [SSL] Generazione certificato Server con SAN per IP locale...")
-        ext_file = os.path.join(CERTS_DIR, "san.ext")
-        csr_file = os.path.join(CERTS_DIR, "srv.csr")
-        
-        local_ip = "127.0.0.1"
+    # 2. Server Certificate signed by CA with SAN for ALL local IPs (LAN, Tailscale, ...)
+    ext_file = os.path.join(CERTS_DIR, "san.ext")
+    csr_file = os.path.join(CERTS_DIR, "srv.csr")
+
+    local_ips = get_local_ipv4_addresses()
+    alt_lines = [
+        "DNS.1 = localhost",
+        "DNS.2 = herdr.local",
+        "DNS.3 = *.local",
+    ]
+    for i, ip in enumerate(local_ips, start=1):
+        alt_lines.append(f"IP.{i} = {ip}")
+    san_content = (
+        "authorityKeyIdentifier=keyid,issuer\n"
+        "basicConstraints=CA:FALSE\n"
+        "keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment\n"
+        "subjectAltName = @alt_names\n"
+        "\n[alt_names]\n" + "\n".join(alt_lines) + "\n"
+    )
+
+    # Rigenera il certificato se manca oppure se la SAN non copre gli IP attuali
+    need_cert = not (os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE))
+    if not need_cert and os.path.exists(ext_file):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
+            with open(ext_file, "r", encoding="utf-8") as f:
+                need_cert = f.read().strip() != san_content.strip()
         except Exception:
-            pass
+            need_cert = True
+    else:
+        need_cert = True
 
-        san_content = f"""
-authorityKeyIdentifier=keyid,issuer
-basicConstraints=CA:FALSE
-keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
-subjectAltName = @alt_names
-
-[alt_names]
-DNS.1 = localhost
-DNS.2 = herdr.local
-DNS.3 = *.local
-IP.1 = 127.0.0.1
-IP.2 = {local_ip}
-"""
-        with open(ext_file, "w") as f:
+    if need_cert:
+        print("🔒 [SSL] Generazione certificato Server con SAN per IP:", ", ".join(local_ips))
+        with open(ext_file, "w", encoding="utf-8") as f:
             f.write(san_content.strip())
 
+        primary_ip = local_ips[0] if local_ips else "127.0.0.1"
         subprocess.run([
             "openssl", "req", "-newkey", "rsa:2048", "-nodes",
             "-keyout", KEY_FILE, "-out", csr_file,
-            "-subj", f"/CN={local_ip}/O=Herdr/C=IT"
+            "-subj", f"/CN={primary_ip}/O=Herdr/C=IT"
         ], check=True, capture_output=True)
 
         subprocess.run([
@@ -1241,10 +1369,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             notif_settings = load_notification_settings()
             return self.send_json(notif_settings)
 
+        # API: Filesystem browser (solo dentro la home utente)
+        if path == "/api/fs/list":
+            raw = (query.get("path", ["~"])[0] or "~")
+            resolved = fs_safe_resolve(raw)
+            if not resolved:
+                return self.send_json({"error": "Percorso non valido o fuori dalla home utente"}, status=403)
+            dirs, err = fs_list_dir(resolved)
+            if err is not None:
+                return self.send_json({"error": f"Impossibile leggere la directory: {err}"}, status=400)
+            return self.send_json({
+                "path": resolved,
+                "home": FS_ROOT,
+                "parent": os.path.dirname(resolved) if resolved != FS_ROOT else None,
+                "is_home": resolved == FS_ROOT,
+                "directories": [
+                    {"name": os.path.basename(d), "path": d, "hidden": os.path.basename(d).startswith(".")}
+                    for d in dirs
+                ],
+                "favorites": load_fs_favorites()
+            })
+
         # API: Aggregated state for mobile app
         if path == "/api/push/public-key":
-            if os.path.exists("vapid_keys.json"):
-                with open("vapid_keys.json") as f:
+            v_path = os.path.join(BASE_DIR, "vapid_keys.json")
+            if os.path.exists(v_path):
+                with open(v_path) as f:
                     keys = json.load(f)
                 return self.send_json({"publicKey": keys.get("public_key", "")})
             return self.send_json({"error": "VAPID keys not configured"}, status=404)
@@ -1392,6 +1542,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             settings = toggle_notification_target(target_type, target_id, enabled)
             return self.send_json({"success": True, "settings": settings})
 
+        # API: Filesystem — creazione cartella (solo dentro la home utente)
+        if parsed.path == "/api/fs/mkdir":
+            parent = fs_safe_resolve(payload.get("path"))
+            name = str(payload.get("name") or "").strip()
+            if not parent:
+                return self.send_json({"error": "Percorso non valido o fuori dalla home utente"}, status=403)
+            if not name or name in (".", "..") or any(c in name for c in '/\\:*?"<>|') or any(ord(c) < 32 for c in name):
+                return self.send_json({"error": "Nome cartella non valido"}, status=400)
+            target = os.path.join(parent, name)
+            if os.path.lexists(target):
+                return self.send_json({"error": "Una cartella con questo nome esiste già"}, status=409)
+            try:
+                os.mkdir(target)
+            except OSError as e:
+                return self.send_json({"error": f"Creazione fallita: {e}"}, status=500)
+            return self.send_json({"success": True, "path": os.path.abspath(target)})
+
+        # API: Filesystem — toggle cartelle preferite
+        if parsed.path == "/api/fs/favorites":
+            resolved = fs_safe_resolve(payload.get("path"))
+            if not resolved:
+                return self.send_json({"error": "Percorso non valido o fuori dalla home utente"}, status=403)
+            favorites = load_fs_favorites()
+            if bool(payload.get("favorite")):
+                if resolved not in favorites:
+                    favorites.append(resolved)
+            else:
+                favorites = [p for p in favorites if fs_safe_resolve(p) != resolved]
+            save_fs_favorites(favorites)
+            return self.send_json({"success": True, "favorites": favorites})
+
         if parsed.path == "/api/push/test":
             title = payload.get("title", "⚡ Herdr Test")
             body = payload.get("body", "Questo è un test push inviato direttamente dal server!")
@@ -1439,6 +1620,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ws_id = payload.get("workspace_id")
             res = herdr.workspace_focus(ws_id)
             return self.send_json(res)
+
+        if parsed.path == "/api/workspace/rename":
+            ws_id = payload.get("workspace_id")
+            label = (payload.get("label") or "").strip()
+            if not ws_id:
+                return self.send_json({"error": "Missing workspace_id"}, status=400)
+            res = herdr.workspace_rename(ws_id, label=label if label else None)
+            if isinstance(res, dict) and res.get("error"):
+                return self.send_json({"success": False, "error": res["error"].get("message", "Rename spazio fallito")}, status=502)
+            return self.send_json({
+                "success": True,
+                "workspace_id": ws_id,
+                "label": label,
+                "workspace": res.get("result", {}).get("workspace")
+            })
 
         # Tab Management
         if parsed.path == "/api/tab/create":
@@ -1800,7 +1996,14 @@ def monitor_agents_background():
 def run_server():
     import threading
     threading.Thread(target=monitor_agents_background, daemon=True).start()
-    ensure_ssl_certificates()
+    try:
+        ensure_ssl_certificates()
+    except Exception as e:
+        print(f"⚠️  [SSL] Generazione/rinnovo certificato fallito ({e}). "
+              + ("Il server userà i certificati esistenti." if os.path.exists(CERT_FILE) else "IMPOSSIBILE avviare HTTPS: certificati mancanti."))
+        if not os.path.exists(CERT_FILE):
+            raise
+    ensure_vapid_keys()
     ensure_auth_credentials()
 
     server_address = ('0.0.0.0', PORT)

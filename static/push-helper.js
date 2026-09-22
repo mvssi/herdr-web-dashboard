@@ -163,8 +163,12 @@ async function subscribeUserToPush() {
             return false;
         }
 
-        // 2. Assicurati che il SW sia pronto
-        const reg = await navigator.serviceWorker.ready;
+        // 2. Assicurati che il SW sia pronto (con timeout: se il SW non si è registrato,
+        //    es. pagina aperta su HTTPS con certificato non fidato, .ready resterebbe appeso)
+        const reg = await Promise.race([
+            navigator.serviceWorker.ready,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Service Worker non registrato: la pagina non è in un contesto sicuro (HTTPS con certificato fidato)?')), 8000))
+        ]);
 
         // 3. Prendi la chiave pubblica VAPID dal server
         const keyResp = await fetch('/api/push/public-key');
