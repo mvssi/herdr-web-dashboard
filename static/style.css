@@ -976,6 +976,29 @@ html, body {
     scroll-behavior: auto;
 }
 
+/* Touch scroll nativo del terminale (mobile/tablet).
+   Il tocco deve atterrare su .xterm-viewport, l'UNICO elemento scrollabile:
+   di default e' dietro .xterm-screen (che nel DOM viene dopo), quindi il tocco
+   colpisce .xterm-screen e Chromium "claima" il gesto senza uno scroller
+   valido => pointercancel dopo il primo touchmove e scroll morto.
+   Solo su pointer coarse (touch): su desktop il mouse deve restare sullo screen
+   per la selezione testo di xterm. */
+@media (pointer: coarse) {
+    .terminal-container .xterm-viewport {
+        z-index: 50;
+        /* il viewport spostato sopra lo screen deve lasciare vedere il testo:
+           xterm.js imposta il background del tema INLINE sul viewport
+           (via ThemeService), serve !important per renderlo trasparente */
+        background: transparent !important;
+    }
+    /* i bottoni overlay del terminale devono restare TOCABILI: ora che il
+       viewport (z 50) copre tutto, li alziamo sopra di esso */
+    .terminal-viewport .btn-scroll-bottom,
+    .terminal-viewport .btn-kbd-mode {
+        z-index: 60;
+    }
+}
+
 .terminal-container .xterm-viewport::-webkit-scrollbar {
     width: 6px;
 }

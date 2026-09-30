@@ -34,6 +34,20 @@ function initTouchScroll() {
     if (!DOM.terminalContainer || DOM.terminalContainer._touchScrollInitialized) return;
     DOM.terminalContainer._touchScrollInitialized = true;
 
+    // Touch scroll NATIVO con momentum (mobile/tablet).
+    // Il CSS (pointer coarse) mette .xterm-viewport SOPRA .xterm-screen: il tocco
+    // colpisce il viewport, l'unico elemento davvero scrollabile. Qui fermiamo la
+    // propagazione dei touchmove PRIMA che raggiungano il listener touch di xterm
+    // (su .xterm): quello chiama preventDefault e cosi' il browser non prende mai
+    // possesso del gesto => scroll solo JS 1:1, senza fling al rilascio del dito.
+    // Bloccando la propagazione e SENZA preventDefault, Chromium/WebKit gestiscono
+    // pan + momentum nativi e il listener 'scroll' interno di xterm sincronizza
+    // il buffer (stesso percorso della rotella, gia' testato e fluido).
+    const nativeViewport = DOM.terminalContainer.querySelector('.xterm-viewport');
+    if (nativeViewport) {
+        nativeViewport.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
+    }
+
     // Scroll TOUCH nativo: touch-action: pan-y + -webkit-overflow-scrolling sono
     // gia' su .xterm-viewport, quindi il browser gestisce il pan con il suo
     // momentum fluido. Il vecchio hijack JS (preventDefault + scrollTop manuale

@@ -936,6 +936,51 @@ def get_all_slash_commands(project_cwd=None):
     _SLASH_COMMANDS_CACHE = {"timestamp": now, "cwd": project_cwd, "data": result}
     return result
 
+# =============================================================================
+# SPINNER FRAME DEDUP (TUI agenti: pi, claude, ...)
+# Il demone herdr nel formato recent_unwrapped APPENDE ogni frame dello spinner
+# dei TUI agent ("── ⠙ Working ────") come riga separata del transcript: un
+# redraw in-place diventa decine di righe duplicate che il dashboard renderizza
+# una per una (bug "Working" ripetuto). Qui collassiamo i frame consecutivi
+# [spinner, blank*] tenendo solo l'ultimo, preservando l'animazione (il frame
+# corrente cambia carattere e viene riscritto in-place dal frontend).
+# =============================================================================
+_ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+_SPINNER_ANY_RE = re.compile(r'──\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⋯·]\s*Working')
+_SPINNER_CHAR_RE = re.compile(r'──\s*([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⋯·])\s*Working')
+
+def _is_spinner_line(line: str) -> bool:
+    return bool(_SPINNER_ANY_RE.search(_ANSI_RE.sub('', line)))
+
+def dedupe_spinner_frames(raw_text: str) -> str:
+    """Rimuove tutti i frame spinner del TUI tranne l'ultimo, ricostruito pulito.
+
+    Durante la generazione il transcript recent_unwrapped raccoglie ogni
+    ridisegno dello spinner dei TUI agent ("── ⠙ Working ────") come riga
+    separata, oppure fuso piu' volte sulla stessa riga. Nella vista reale del
+    terminale esiste solo l'ultimo stato (il TUI riscrive in-place), quindi i
+    frame precedenti sono puro rumore che il dashboard accumulerebbe nello
+    scrollback (e le righe fuste, wrappando, moltiplicano i residui)."""
+    if not raw_text or 'Working' not in raw_text:
+        return raw_text
+    lines = raw_text.split('\n')
+    last_idx = -1
+    for i, ln in enumerate(lines):
+        if _is_spinner_line(ln):
+            last_idx = i
+    if last_idx == -1:
+        return raw_text
+    out = []
+    for i, ln in enumerate(lines):
+        if i == last_idx:
+            # ricostruisce la riga con UN solo frame (l'ultimo carattere spinner)
+            chars = _SPINNER_CHAR_RE.findall(_ANSI_RE.sub('', ln))
+            ch = chars[-1] if chars else '⋯'
+            out.append(f'── {ch} Working ' + '─' * 40)
+        elif not _is_spinner_line(ln):
+            out.append(ln)
+    return '\n'.join(out)
+
 def get_aggregated_state(lines=1500, source="recent_unwrapped"):
     """Fetch full aggregated state of workspaces, tabs, panes, and detected agents."""
     connected, msg = herdr.is_connected()
@@ -1003,7 +1048,7 @@ def get_aggregated_state(lines=1500, source="recent_unwrapped"):
                     # For background panes, fetch only 20 lines (enough to detect waiting_confirm).
                     fetch_lines = lines if is_globally_focused else 20
                     p_read = herdr.read_pane(p_id, lines=fetch_lines, source=source, format="ansi")
-                    raw_content = p_read.get("raw_text", "")
+                    raw_content = dedupe_spinner_frames(p_read.get("raw_text", ""))
                     clean_content = p_read.get("clean_text", "")
                     revision = p_read.get("revision", 0)
 
@@ -1356,6 +1401,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "Missing pane_id"}, status=400)
             
             read_data = herdr.read_pane(pane_id, lines=lines, source=source)
+            read_data["raw_text"] = dedupe_spinner_frames(read_data.get("raw_text", ""))
             return self.send_json(read_data)
 
         # API: Slash Commands & Dynamic Skills Discovery
